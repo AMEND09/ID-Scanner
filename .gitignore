@@ -1,0 +1,15 @@
+# Environment variables and secrets
+config.local.js
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

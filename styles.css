@@ -1,0 +1,379 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    padding: 10px;
+    color: #333;
+}
+
+.container {
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 0;
+    color: white;
+}
+
+header h1 {
+    font-size: 24px;
+    font-weight: 600;
+}
+
+main {
+    padding-bottom: 30px;
+}
+
+.card {
+    background: white;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 15px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.card h2 {
+    font-size: 20px;
+    margin-bottom: 10px;
+    color: #667eea;
+}
+
+.card h3 {
+    font-size: 18px;
+    margin-bottom: 12px;
+    color: #667eea;
+}
+
+.card p {
+    color: #666;
+    margin-bottom: 15px;
+    line-height: 1.5;
+}
+
+/* Buttons */
+.btn-primary, .btn-secondary, .btn-sheet {
+    padding: 12px 24px;
+    border: none;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    width: 100%;
+    margin-bottom: 10px;
+}
+
+.btn-primary {
+    background: #667eea;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #5568d3;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+.btn-primary:active {
+    transform: translateY(0);
+}
+
+.btn-secondary {
+    background: #f1f3f4;
+    color: #333;
+}
+
+.btn-secondary:hover {
+    background: #e8eaed;
+}
+
+.btn-sheet {
+    background: white;
+    color: #333;
+    border: 2px solid #e8eaed;
+    text-align: left;
+    padding: 15px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.btn-sheet:hover {
+    border-color: #667eea;
+    background: #f8f9ff;
+}
+
+.btn-sheet span {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Camera */
+.camera-container {
+    position: relative;
+    overflow: hidden;
+    padding: 0;
+}
+
+#video {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 12px 12px 0 0;
+}
+
+#video canvas,
+#video video {
+    width: 100% !important;
+    height: auto !important;
+    display: block;
+    border-radius: 12px 12px 0 0;
+}
+
+.status-text {
+    text-align: center;
+    padding: 15px;
+    background: #f8f9ff;
+    color: #667eea;
+    font-weight: 500;
+}
+
+/* Input Group */
+.input-group {
+    display: flex;
+    gap: 10px;
+}
+
+.input-group input {
+    flex: 1;
+    padding: 12px;
+    border: 2px solid #e8eaed;
+    border-radius: 8px;
+    font-size: 16px;
+}
+
+.input-group input:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
+.input-group .btn-primary {
+    flex: 0 0 auto;
+    width: auto;
+    margin-bottom: 0;
+}
+
+/* Recent Scans */
+.recent-scans {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.scan-item {
+    padding: 12px;
+    background: #f8f9ff;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.scan-item.success {
+    background: #d4edda;
+    border-left: 4px solid #28a745;
+}
+
+.scan-item.error {
+    background: #f8d7da;
+    border-left: 4px solid #dc3545;
+}
+
+.scan-code {
+    font-weight: 600;
+    font-size: 16px;
+    color: #333;
+}
+
+.scan-time {
+    font-size: 12px;
+    color: #666;
+}
+
+/* Status Message */
+.status-message {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: white;
+    padding: 15px 25px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    display: none;
+    z-index: 1000;
+    max-width: 90%;
+    text-align: center;
+}
+
+.status-message.show {
+    display: block;
+    animation: slideUp 0.3s ease;
+}
+
+.status-message.success {
+    background: #28a745;
+    color: white;
+}
+
+.status-message.error {
+    background: #dc3545;
+    color: white;
+}
+
+@keyframes slideUp {
+    from {
+        transform: translateX(-50%) translateY(100px);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(-50%) translateY(0);
+        opacity: 1;
+    }
+}
+
+/* Info Text */
+.info-text {
+    color: #667eea;
+    font-weight: 500;
+    margin-bottom: 15px;
+}
+
+/* Sheets List */
+#sheetsList {
+    margin-bottom: 15px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+/* Loading State */
+.loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+/* Mobile Optimizations */
+@media (max-width: 480px) {
+    header h1 {
+        font-size: 20px;
+    }
+    
+    .card {
+        padding: 15px;
+    }
+    
+    .btn-primary, .btn-secondary {
+        padding: 10px 20px;
+        font-size: 14px;
+    }
+}
+
+/* Dark areas for camera scanning */
+.drawingBuffer {
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+
+/* Detection Overlay */
+.detection-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(40, 167, 69, 0.95);
+    color: white;
+    padding: 20px 30px;
+    border-radius: 12px;
+    font-size: 24px;
+    font-weight: bold;
+    text-align: center;
+    display: none;
+    z-index: 100;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    animation: pulse 0.5s ease-in-out;
+}
+
+.detection-overlay.show {
+    display: block;
+}
+
+.detection-overlay.invalid {
+    background: rgba(255, 193, 7, 0.95);
+}
+
+/* Live read panel */
+.live-read {
+    display: block;
+    background: #fffbe6;
+    border: 1px solid #ffe58f;
+    color: #614700;
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 12px;
+}
+
+/* Modal for prompting additional info */
+.modal {
+    position: fixed;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+}
+.modal-content {
+    background: white;
+    padding: 18px;
+    border-radius: 10px;
+    width: 90%;
+    max-width: 420px;
+}
+.modal-content input {
+    width: 100%;
+    padding: 10px;
+    margin-top: 6px;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    border: 1px solid #e8eaed;
+}
+
+@keyframes pulse {
+    0% {
+        transform: translate(-50%, -50%) scale(0.8);
+        opacity: 0;
+    }
+    50% {
+        transform: translate(-50%, -50%) scale(1.05);
+    }
+    100% {
+        transform: translate(-50%, -50%) scale(1);
+        opacity: 1;
+    }
+}

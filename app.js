@@ -1,0 +1,687 @@
+// Load configuration
+import { CONFIG } from './config.js';
+
+// Google API Configuration
+const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly';
+
+// State
+let tokenClient;
+let gapiInited = false;
+let gisInited = false;
+let accessToken = null;
+let selectedSheetId = localStorage.getItem('selectedSheetId');
+let selectedSheetName = localStorage.getItem('selectedSheetName');
+let isScanning = false;
+let recentScans = [];
+// QR scanning state
+let overlayTimeout;
+let lastDetectedCode = '';
+let lastDetectedTime = 0;
+let qrLoopInterval = null;
+let qrStartRetryTimeout = null;
+
+// DOM Elements
+const authSection = document.getElementById('authSection');
+const sheetSelectionSection = document.getElementById('sheetSelectionSection');
+const scannerSection = document.getElementById('scannerSection');
+const authorizeBtn = document.getElementById('authorizeBtn');
+const logoutBtn = document.getElementById('logoutBtn');
+const sheetsList = document.getElementById('sheetsList');
+const refreshSheetsBtn = document.getElementById('refreshSheetsBtn');
+const changeSheetBtn = document.getElementById('changeSheetBtn');
+const selectedSheetNameEl = document.getElementById('selectedSheetName');
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const scannerStatus = document.getElementById('scannerStatus');
+const manualInput = document.getElementById('manualInput');
+const submitManualBtn = document.getElementById('submitManualBtn');
+const recentScansEl = document.getElementById('recentScans');
+const statusMessage = document.getElementById('statusMessage');
+const detectionOverlay = document.getElementById('detectionOverlay');
+const liveReadContent = document.getElementById('liveReadContent');
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    setupEventListeners();
+    
+    // Wait for Google APIs to load
+    waitForGoogleAPIs();
+});
+
+function waitForGoogleAPIs() {
+    // Check if both gapi and google are loaded
+    if (typeof gapi !== 'undefined' && typeof google !== 'undefined') {
+        gapiLoaded();
+        gisLoaded();
+    } else {
+        // Check again in 100ms
+        setTimeout(waitForGoogleAPIs, 100);
+    }
+}
+
+function setupEventListeners() {
+    authorizeBtn.addEventListener('click', handleAuthClick);
+    logoutBtn.addEventListener('click', handleSignoutClick);
+    refreshSheetsBtn.addEventListener('click', loadGoogleSheets);
+    changeSheetBtn.addEventListener('click', showSheetSelection);
+    submitManualBtn.addEventListener('click', handleManualSubmit);
+    manualInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            handleManualSubmit();
+        }
+    });
+}
+
+// Google API Initialization
+function gapiLoaded() {
+    gapi.load('client', initializeGapiClient);
+}
+
+async function initializeGapiClient() {
+    try {
+        // Initialize without discovery docs - we'll load APIs directly
+        const initConfig = {};
+        
+        // API Key is optional - only add if provided
+        if (CONFIG.GOOGLE_API_KEY) {
+            initConfig.apiKey = CONFIG.GOOGLE_API_KEY;
+        }
+        
+        await gapi.client.init(initConfig);
+        
+        // Load APIs directly by name and version
+        await Promise.all([
+            gapi.client.load('https://sheets.googleapis.com/$discovery/rest?version=v4'),
+            gapi.client.load('https://www.googleapis.com/discovery/v1/apis/drive/v3/rest')
+        ]);
+        
+        console.log('Google APIs loaded successfully');
+        gapiInited = true;
+        maybeEnableButtons();
+    } catch (error) {
+        console.error('Error initializing GAPI client:', error);
+        showStatus('Error initializing Google API', 'error');
+    }
+}
+
+function gisLoaded() {
+    try {
+        tokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: CONFIG.GOOGLE_CLIENT_ID,
+            scope: SCOPES,
+            callback: '', // defined later
+        });
+        gisInited = true;
+        maybeEnableButtons();
+    } catch (error) {
+        console.error('Error initializing Google Identity Services:', error);
+        showStatus('Error loading Google Sign-In', 'error');
+    }
+}
+
+function maybeEnableButtons() {
+    if (gapiInited && gisInited) {
+        authorizeBtn.disabled = false;
+        // Check if user is already authorized
+        const token = localStorage.getItem('googleAccessToken');
+        if (token) {
+            accessToken = token;
+            gapi.client.setToken({ access_token: token });
+            checkTokenValidity();
+        }
+    }
+}
+
+async function checkTokenValidity() {
+    try {
+        // Try to make a simple API call to check if token is valid
+        await gapi.client.drive.files.list({ pageSize: 1 });
+        onAuthSuccess();
+    } catch (error) {
+        // Token is invalid, clear it
+        localStorage.removeItem('googleAccessToken');
+        accessToken = null;
+        showAuthSection();
+    }
+}
+
+function handleAuthClick() {
+    if (!tokenClient) {
+        showStatus('Google Sign-In not ready. Please refresh the page.', 'error');
+        return;
+    }
+    
+    tokenClient.callback = async (resp) => {
+        if (resp.error !== undefined) {
+            showStatus('Authorization failed', 'error');
+            console.error('Auth error:', resp);
+            return;
+        }
+        accessToken = resp.access_token;
+        localStorage.setItem('googleAccessToken', accessToken);
+        onAuthSuccess();
+    };
+
+    if (accessToken === null) {
+        tokenClient.requestAccessToken({ prompt: 'consent' });
+    } else {
+        tokenClient.requestAccessToken({ prompt: '' });
+    }
+}
+
+function handleSignoutClick() {
+    if (accessToken) {
+        google.accounts.oauth2.revoke(accessToken, () => {
+            gapi.client.setToken(null);
+        });
+        accessToken = null;
+        localStorage.removeItem('googleAccessToken');
+        localStorage.removeItem('selectedSheetId');
+        localStorage.removeItem('selectedSheetName');
+        selectedSheetId = null;
+        selectedSheetName = null;
+        stopScanner();
+        showAuthSection();
+        showStatus('Signed out successfully', 'success');
+    }
+}
+
+function onAuthSuccess() {
+    authSection.style.display = 'none';
+    logoutBtn.style.display = 'block';
+    
+    if (selectedSheetId && selectedSheetName) {
+        showScannerSection();
+    } else {
+        showSheetSelection();
+    }
+}
+
+function showAuthSection() {
+    authSection.style.display = 'block';
+    sheetSelectionSection.style.display = 'none';
+    scannerSection.style.display = 'none';
+    logoutBtn.style.display = 'none';
+}
+
+function showSheetSelection() {
+    authSection.style.display = 'none';
+    sheetSelectionSection.style.display = 'block';
+    scannerSection.style.display = 'none';
+    stopScanner();
+    loadGoogleSheets();
+}
+
+function showScannerSection() {
+    authSection.style.display = 'none';
+    sheetSelectionSection.style.display = 'none';
+    scannerSection.style.display = 'block';
+    selectedSheetNameEl.textContent = `Logging to: ${selectedSheetName}`;
+    startScanner();
+}
+
+// Google Sheets Functions
+async function loadGoogleSheets() {
+    sheetsList.innerHTML = '<p>Loading your spreadsheets...</p>';
+    refreshSheetsBtn.disabled = true;
+
+    try {
+        // Ensure Drive API is loaded
+        if (!gapi.client.drive) {
+            await gapi.client.load('drive', 'v3');
+        }
+        
+        const response = await gapi.client.drive.files.list({
+            pageSize: 50,
+            fields: 'files(id, name)',
+            q: "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+            orderBy: 'modifiedTime desc'
+        });
+
+        const files = response.result.files;
+        sheetsList.innerHTML = '';
+
+        if (!files || files.length === 0) {
+            sheetsList.innerHTML = '<p>No spreadsheets found. Create one in Google Sheets first.</p>';
+            return;
+        }
+
+        files.forEach(file => {
+            const btn = document.createElement('button');
+            btn.className = 'btn-sheet';
+            btn.innerHTML = `<span>📊 ${file.name}</span><span>→</span>`;
+            btn.onclick = () => selectSheet(file.id, file.name);
+            sheetsList.appendChild(btn);
+        });
+    } catch (error) {
+        console.error('Error loading sheets:', error);
+        sheetsList.innerHTML = '<p>Error loading spreadsheets. Please try again.</p>';
+        showStatus('Error loading spreadsheets', 'error');
+    } finally {
+        refreshSheetsBtn.disabled = false;
+    }
+}
+
+function selectSheet(sheetId, sheetName) {
+    selectedSheetId = sheetId;
+    selectedSheetName = sheetName;
+    localStorage.setItem('selectedSheetId', sheetId);
+    localStorage.setItem('selectedSheetName', sheetName);
+    showScannerSection();
+    showStatus(`Selected: ${sheetName}`, 'success');
+}
+
+async function appendToSheet(code) {
+    if (!selectedSheetId) {
+        showStatus('No sheet selected', 'error');
+        return false;
+    }
+
+    // If 'code' is an object with structured fields, append Full Name, Grade, ID, Date, Time
+    let values;
+    const now = new Date();
+    const dateStr = now.toLocaleDateString();
+    const timeStr = now.toLocaleTimeString();
+
+    if (code && typeof code === 'object' && (code.id || code.fn || code.ln || code.gr)) {
+        const id = (code.id || '').toString().trim();
+        const fn = (code.fn || '').toString();
+        const ln = (code.ln || '').toString();
+        const fullName = (fn + ' ' + ln).replace(/\s+/g, ' ').trim();
+        const grade = (code.gr || '').toString().trim();
+        values = [[fullName, grade, id, dateStr, timeStr]]; // A:FullName B:Grade C:ID D:Date E:Time
+    } else {
+        // Legacy behavior: append raw code + date + time
+        values = [[code, '', '', dateStr, timeStr]]; // keep columns consistent
+    }
+
+    try {
+        await gapi.client.sheets.spreadsheets.values.append({
+            spreadsheetId: selectedSheetId,
+            range: 'Sheet1!A:E',
+            valueInputOption: 'USER_ENTERED',
+            resource: {
+                values
+            }
+        });
+
+        // For display purposes, pick a label for recent scans
+    const displayLabel = (values[0][0] || values[0][0] === 0 ? values[0][0] : '').toString();
+        addRecentScan(displayLabel, true);
+        showStatus(`✓ Logged: ${displayLabel}`, 'success');
+        return true;
+    } catch (error) {
+        console.error('Error appending to sheet:', error);
+        addRecentScan((values && values[0] && values[0][0]) || code, false);
+        showStatus('Error logging to sheet', 'error');
+        return false;
+    }
+}
+
+// Modal handling for when only ID scanned and we need name/grade
+const promptModal = document.getElementById('promptModal');
+const modalIdDisplay = document.getElementById('modalIdDisplay');
+const modalFullName = document.getElementById('modalFullName');
+const modalGrade = document.getElementById('modalGrade');
+const modalSaveBtn = document.getElementById('modalSaveBtn');
+const modalCancelBtn = document.getElementById('modalCancelBtn');
+
+let pendingIdForModal = null;
+
+function showPromptForId(id) {
+    pendingIdForModal = id;
+    modalIdDisplay.textContent = `ID: ${id}`;
+    modalFullName.value = '';
+    modalGrade.value = '';
+    promptModal.style.display = 'flex';
+    // pause scanning
+    if (isScanning) {
+        Quagga.pause();
+    }
+}
+
+function hidePrompt() {
+    promptModal.style.display = 'none';
+    pendingIdForModal = null;
+    if (isScanning) {
+        try { Quagga.onProcessed(() => {}); } catch(e){}
+        Quagga.start();
+    }
+}
+
+modalCancelBtn.addEventListener('click', () => {
+    hidePrompt();
+});
+
+modalSaveBtn.addEventListener('click', async () => {
+    const fullName = modalFullName.value.trim();
+    const grade = modalGrade.value.trim();
+    const id = pendingIdForModal;
+    if (!id) return hidePrompt();
+    if (!fullName) {
+        alert('Please enter full name');
+        return;
+    }
+    // Build structured object and append (includes date/time in appendToSheet)
+    const payload = { fn: fullName, ln: '', id: id.toString(), gr: grade };
+    await appendToSheet(payload);
+    hidePrompt();
+});
+
+// Scanner Functions
+function startScanner() {
+    if (isScanning) return;
+
+    // Request camera permissions first
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+        .then(function(stream) {
+            // Stop the test stream
+            stream.getTracks().forEach(track => track.stop());
+            
+            // Now initialize Quagga
+            Quagga.init({
+                inputStream: {
+                    name: "Live",
+                    type: "LiveStream",
+                    target: document.querySelector('#video'),
+                    constraints: {
+                        width: { ideal: 1280, min: 640 },
+                        height: { ideal: 720, min: 480 },
+                        facingMode: "environment"
+                    }
+                },
+                decoder: {
+                    readers: [
+                        "code_128_reader",
+                        "ean_reader",
+                        "ean_8_reader",
+                        "code_39_reader",
+                        "code_39_vin_reader",
+                        "codabar_reader",
+                        "upc_reader",
+                        "upc_e_reader",
+                        "i2of5_reader"
+                    ],
+                    debug: {
+                        drawBoundingBox: true,
+                        showFrequency: false,
+                        drawScanline: true,
+                        showPattern: false
+                    }
+                },
+                locate: true,
+                numOfWorkers: 0,
+                frequency: 10
+            }, function (err) {
+                if (err) {
+                    console.error('Error starting scanner:', err);
+                    scannerStatus.textContent = 'Camera initialization failed: ' + err.message;
+                    scannerStatus.style.background = '#f8d7da';
+                    scannerStatus.style.color = '#721c24';
+                    return;
+                }
+                
+                console.log('Quagga initialized, starting...');
+                Quagga.start();
+                isScanning = true;
+                scannerStatus.textContent = 'Scanner active - Position barcode in view';
+                scannerStatus.style.background = '#d4edda';
+                scannerStatus.style.color = '#155724';
+
+                // Start QR polling loop
+                startQRLoop();
+            });
+        })
+        .catch(function(err) {
+            console.error('Camera access error:', err);
+            scannerStatus.textContent = 'Camera access denied. Please enable camera permissions.';
+            scannerStatus.style.background = '#f8d7da';
+            scannerStatus.style.color = '#721c24';
+        });
+
+    Quagga.onDetected(async function (result) {
+        const code = result.codeResult.code;
+        const now = Date.now();
+        const valid = /^\d{9,10}$/.test(code);
+
+        // Try parsing structured JSON payloads
+        let parsed = code;
+        try {
+            if (typeof code === 'string' && (code.trim().startsWith('{') || code.trim().startsWith('['))) {
+                parsed = JSON.parse(code);
+            }
+        } catch (e) {
+            // leave parsed as raw string
+        }
+
+        // Determine validity for display when parsed is a string
+        const displayValue = (typeof parsed === 'object' ? (parsed.fn || parsed.ln ? (parsed.fn + ' ' + parsed.ln).trim() : JSON.stringify(parsed)) : parsed);
+        const isValidNumeric = (/^\d{9,10}$/.test(parsed));
+        const isStructured = (typeof parsed === 'object' && parsed !== null && (parsed.id || parsed.fn || parsed.ln || parsed.gr));
+
+        // Always show detection overlay and update live read with validity
+        showDetection(displayValue, isValidNumeric || isStructured);
+        updateLiveRead('barcode', displayValue, isValidNumeric || isStructured);
+
+        // If neither numeric nor structured, show and return
+        if (!(isValidNumeric || isStructured)) {
+            console.log('Invalid code format:', code);
+            return;
+        }
+
+        // Prevent duplicate scans within 3 seconds
+        if (displayValue === lastDetectedCode && now - lastDetectedTime < 3000) {
+            return;
+        }
+
+        lastDetectedCode = displayValue;
+        lastDetectedTime = now;
+
+        // Provide haptic feedback if available
+        if (navigator.vibrate) {
+            navigator.vibrate(200);
+        }
+
+        scannerStatus.textContent = `✓ Detected: ${displayValue}`;
+        scannerStatus.style.background = '#d4edda';
+        scannerStatus.style.color = '#155724';
+
+        // If structured, append immediately
+        if (isStructured) {
+            await appendToSheet(parsed);
+            return;
+        }
+
+        // If numeric-only ID, prompt the user for name/grade
+        if (isValidNumeric) {
+            showPromptForId(displayValue);
+            return;
+        }
+    });
+    
+    // Also show processing feedback
+    Quagga.onProcessed(function (result) {
+        const drawingCtx = Quagga.canvas.ctx.overlay;
+        const drawingCanvas = Quagga.canvas.dom.overlay;
+
+        if (result) {
+            if (result.boxes) {
+                drawingCtx.clearRect(0, 0, parseInt(drawingCanvas.getAttribute("width")), parseInt(drawingCanvas.getAttribute("height")));
+                result.boxes.filter(function (box) {
+                    return box !== result.box;
+                }).forEach(function (box) {
+                    Quagga.ImageDebug.drawPath(box, {x: 0, y: 1}, drawingCtx, {color: "green", lineWidth: 2});
+                });
+            }
+
+            if (result.box) {
+                Quagga.ImageDebug.drawPath(result.box, {x: 0, y: 1}, drawingCtx, {color: "#00F", lineWidth: 2});
+            }
+
+            if (result.codeResult && result.codeResult.code) {
+                Quagga.ImageDebug.drawPath(result.line, {x: 'x', y: 'y'}, drawingCtx, {color: 'red', lineWidth: 3});
+            }
+        }
+    });
+}
+
+function stopScanner() {
+    if (isScanning) {
+        Quagga.stop();
+        isScanning = false;
+    }
+    // Stop QR loop if running
+    if (qrLoopInterval) {
+        clearInterval(qrLoopInterval);
+        qrLoopInterval = null;
+    }
+    if (qrStartRetryTimeout) {
+        clearTimeout(qrStartRetryTimeout);
+        qrStartRetryTimeout = null;
+    }
+}
+
+// QR scanning using jsQR (reads directly from Quagga's video/canvas)
+function startQRLoop() {
+    // Find Quagga's video element
+    const qVideo = document.querySelector('#video video');
+    if (!qVideo) {
+        // Try again shortly
+        qrStartRetryTimeout = setTimeout(startQRLoop, 500);
+        return;
+    }
+
+    const qrCanvas = document.getElementById('canvas');
+    const qrCtx = qrCanvas.getContext('2d');
+
+    qrLoopInterval = setInterval(() => {
+        try {
+            // Match canvas size to video
+            qrCanvas.width = qVideo.videoWidth;
+            qrCanvas.height = qVideo.videoHeight;
+            qrCtx.drawImage(qVideo, 0, 0, qrCanvas.width, qrCanvas.height);
+            const imageData = qrCtx.getImageData(0, 0, qrCanvas.width, qrCanvas.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'attemptBoth' });
+            if (code && code.data) {
+                const text = code.data.trim();
+                // Try to parse JSON
+                let parsed = text;
+                let isStructured = false;
+                try {
+                    if (text.startsWith('{') || text.startsWith('[')) {
+                        parsed = JSON.parse(text);
+                        isStructured = (typeof parsed === 'object' && parsed !== null && (parsed.id || parsed.fn || parsed.ln || parsed.gr));
+                    }
+                } catch (e) {}
+
+                const displayText = (typeof parsed === 'object') ? (parsed.fn || parsed.ln ? (parsed.fn + ' ' + parsed.ln).trim() : JSON.stringify(parsed)) : parsed;
+                const isNumeric = (/^\d{9,10}$/.test(displayText));
+                const valid = (isNumeric || isStructured);
+                showDetection(displayText, valid);
+                updateLiveRead('qr', displayText, valid);
+
+                const now = Date.now();
+                if (isStructured) {
+                    if (displayText === lastDetectedCode && now - lastDetectedTime < 3000) return;
+                    lastDetectedCode = displayText;
+                    lastDetectedTime = now;
+                    if (navigator.vibrate) navigator.vibrate(200);
+                    appendToSheet(parsed);
+                } else if (isNumeric) {
+                    if (displayText === lastDetectedCode && now - lastDetectedTime < 3000) return;
+                    lastDetectedCode = displayText;
+                    lastDetectedTime = now;
+                    if (navigator.vibrate) navigator.vibrate(200);
+                    // Prompt for name/grade for numeric-only IDs
+                    showPromptForId(displayText);
+                }
+            }
+        } catch (e) {
+            // swallow
+        }
+    }, 300);
+}
+
+function showDetection(code, isValid = true) {
+    clearTimeout(overlayTimeout);
+    
+    if (isValid) {
+        detectionOverlay.className = 'detection-overlay show';
+        detectionOverlay.innerHTML = `✓ Scanned<br><span style="font-size: 32px;">${code}</span>`;
+    } else {
+        detectionOverlay.className = 'detection-overlay show invalid';
+        detectionOverlay.innerHTML = `⚠ Detected<br><span style="font-size: 20px;">${code}</span><br><small style="font-size: 14px;">(Need 9-10 digits)</small>`;
+    }
+    
+    overlayTimeout = setTimeout(() => {
+        detectionOverlay.classList.remove('show');
+    }, isValid ? 2000 : 3000);
+}
+
+function updateLiveRead(type, value, isValid) {
+    const ts = new Date().toLocaleTimeString();
+    const prefix = type === 'qr' ? 'QR' : 'Barcode';
+    const validity = isValid ? 'VALID' : 'INVALID';
+    liveReadContent.innerHTML = `${prefix} | ${validity} | ${ts}<br><span style="font-size:18px;">${value}</span>`;
+}
+
+// Manual Entry
+function handleManualSubmit() {
+    const code = manualInput.value.trim();
+    
+    if (!/^\d{9,10}$/.test(code)) {
+        showStatus('Please enter 9-10 digits', 'error');
+        return;
+    }
+
+    appendToSheet(code);
+    manualInput.value = '';
+}
+
+// Recent Scans
+function addRecentScan(code, success) {
+    const scan = {
+        code,
+        timestamp: new Date().toLocaleString(),
+        success
+    };
+
+    recentScans.unshift(scan);
+    if (recentScans.length > 10) {
+        recentScans.pop();
+    }
+
+    updateRecentScansDisplay();
+}
+
+function updateRecentScansDisplay() {
+    if (recentScans.length === 0) {
+        recentScansEl.innerHTML = '<p style="color: #999;">No scans yet</p>';
+        return;
+    }
+
+    recentScansEl.innerHTML = recentScans.map(scan => `
+        <div class="scan-item ${scan.success ? 'success' : 'error'}">
+            <div>
+                <div class="scan-code">${scan.code}</div>
+                <div class="scan-time">${scan.timestamp}</div>
+            </div>
+            <div>${scan.success ? '✓' : '✗'}</div>
+        </div>
+    `).join('');
+}
+
+// Status Messages
+function showStatus(message, type = 'success') {
+    statusMessage.textContent = message;
+    statusMessage.className = `status-message show ${type}`;
+    
+    setTimeout(() => {
+        statusMessage.classList.remove('show');
+    }, 3000);
+}
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    stopScanner();
+});

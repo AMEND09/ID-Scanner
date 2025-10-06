@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Barcode Scanner - Google Sheets Logger</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📦 Barcode Logger</h1>
+            <button id="logoutBtn" class="btn-secondary" style="display: none;">Logout</button>
+        </header>
+
+        <main>
+            <!-- Auth Section -->
+            <div id="authSection" class="card">
+                <h2>Welcome!</h2>
+                <p>Sign in with Google to get started</p>
+                <button id="authorizeBtn" class="btn-primary">
+                    <span>🔐 Sign in with Google</span>
+                </button>
+            </div>
+
+            <!-- Sheet Selection Section -->
+            <div id="sheetSelectionSection" class="card" style="display: none;">
+                <h2>Select a Google Sheet</h2>
+                <p>Choose which spreadsheet to log your scans to:</p>
+                <div id="sheetsList"></div>
+                <button id="refreshSheetsBtn" class="btn-secondary">Refresh Sheets List</button>
+            </div>
+
+            <!-- Scanner Section -->
+            <div id="scannerSection" style="display: none;">
+                <div class="card">
+                    <h2>Ready to Scan</h2>
+                    <p id="selectedSheetName" class="info-text"></p>
+                    <button id="changeSheetBtn" class="btn-secondary">Change Sheet</button>
+                </div>
+
+                <!-- Camera View -->
+                <div class="card camera-container">
+                    <div id="video"></div>
+                    <canvas id="canvas" style="display: none;"></canvas>
+                    <div id="scannerStatus" class="status-text">Position barcode in view</div>
+                    <div id="detectionOverlay" class="detection-overlay"></div>
+                </div>
+
+                <!-- Live Read (shows what was last detected) -->
+                <div class="card live-read" id="liveRead">
+                    <strong>Last read:</strong>
+                    <div id="liveReadContent" style="margin-top:8px;color:#333;font-family:monospace;">None</div>
+                </div>
+
+                <!-- Modal: prompt for name and grade when only ID is scanned -->
+                <div id="promptModal" class="modal" style="display:none;">
+                    <div class="modal-content">
+                        <h3>Enter student info</h3>
+                        <p id="modalIdDisplay" style="font-family:monospace;color:#333;"></p>
+                        <label>Full name</label>
+                        <input type="text" id="modalFullName" placeholder="First Last">
+                        <label>Grade</label>
+                        <input type="text" id="modalGrade" placeholder="11">
+                        <div style="display:flex;gap:8px;margin-top:12px;">
+                            <button id="modalSaveBtn" class="btn-primary">Save</button>
+                            <button id="modalCancelBtn" class="btn-secondary">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Manual Entry -->
+                <div class="card">
+                    <h3>Or Enter Manually</h3>
+                    <div class="input-group">
+                        <input type="text" id="manualInput" placeholder="Enter 9-10 digit code" maxlength="10" pattern="[0-9]*" inputmode="numeric">
+                        <button id="submitManualBtn" class="btn-primary">Submit</button>
+                    </div>
+                </div>
+
+                <!-- Recent Scans -->
+                <div class="card">
+                    <h3>Recent Scans</h3>
+                    <div id="recentScans" class="recent-scans"></div>
+                </div>
+            </div>
+
+            <!-- Status Messages -->
+            <div id="statusMessage" class="status-message"></div>
+        </main>
+    </div>
+
+    <!-- Load QuaggaJS for barcode scanning -->
+    <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/quagga.min.js"></script>
+    <!-- jsQR for QR code decoding from canvas frames -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    
+    <!-- Load Google API - Remove async/defer to ensure proper loading order -->
+    <script src="https://apis.google.com/js/api.js"></script>
+    <script src="https://accounts.google.com/gsi/client"></script>
+    
+    <!-- Load our app -->
+    <script type="module" src="app.js"></script>
+</body>
+</html>
