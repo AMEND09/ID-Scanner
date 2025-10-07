@@ -1,101 +1,73 @@
 // Load configuration
 import { CONFIG } from './config.js';
-    // Initialize Quagga directly. Quagga will request camera permissions itself.
-    Quagga.init({
-        inputStream: {
-            name: "Live",
-            type: "LiveStream",
-            target: document.querySelector('#video'),
-            constraints: {
-                width: { ideal: 1280, min: 640 },
-                height: { ideal: 720, min: 480 },
-                facingMode: "environment"
-            }
-        },
-        decoder: {
-            readers: [
-                "code_128_reader",
-                "ean_reader",
-                "ean_8_reader",
-                "code_39_reader",
-                "code_39_vin_reader",
-                "codabar_reader",
-                "upc_reader",
-                "upc_e_reader",
-                "i2of5_reader"
-            ],
-            debug: {
-                drawBoundingBox: true,
-                showFrequency: false,
-                drawScanline: true,
-                showPattern: false
-            }
-        },
-        locate: true,
-        numOfWorkers: 0,
-        frequency: 10
-    }, function (err) {
-        if (err) {
-            console.error('Error starting scanner:', err);
-            scannerStatus.textContent = 'Camera initialization failed: ' + (err.message || err);
-            scannerStatus.style.background = '#f8d7da';
-            scannerStatus.style.color = '#721c24';
-            return;
-        }
 
-        try {
-            console.log('Quagga initialized, starting...');
-            Quagga.start();
-            isScanning = true;
-            scannerStatus.textContent = 'Scanner active - Position barcode in view';
-            scannerStatus.style.background = '#d4edda';
-            scannerStatus.style.color = '#155724';
+// Google API Configuration
+const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly';
 
-            // Ensure we only start the QR loop once the internal video element is playing.
-            waitForQuaggaVideoAndStartQR();
-        } catch (e) {
-            console.error('Failed to start Quagga:', e);
-            scannerStatus.textContent = 'Failed to start scanner: ' + e.message;
-            scannerStatus.style.background = '#f8d7da';
-            scannerStatus.style.color = '#721c24';
-        }
-    });
-    submitManualBtn.addEventListener('click', handleManualSubmit);
+// State
+let tokenClient;
+let gapiInited = false;
+let gisInited = false;
+let accessToken = null;
+let selectedSheetId = localStorage.getItem('selectedSheetId');
+let selectedSheetName = localStorage.getItem('selectedSheetName');
+let selectedSheetTab = localStorage.getItem('selectedSheetTab') || null;
+let isScanning = false;
+let recentScans = [];
+// QR scanning state
+let overlayTimeout;
+let lastDetectedCode = '';
+let lastDetectedTime = 0;
+let qrLoopInterval = null;
+let qrStartRetryTimeout = null;
 
-function waitForQuaggaVideoAndStartQR(retries = 0) {
-    const qVideo = document.querySelector('#video video');
-    if (qVideo) {
-        // If the video is already playing, start the QR loop immediately.
-        if (qVideo.readyState >= 2 && !qrLoopInterval) {
-            console.log('Video ready (readyState=', qVideo.readyState, '), starting QR loop');
-            startQRLoop();
-            return;
-        }
+// DOM Elements
+const authSection = document.getElementById('authSection');
+const sheetSelectionSection = document.getElementById('sheetSelectionSection');
+const scannerSection = document.getElementById('scannerSection');
+const authorizeBtn = document.getElementById('authorizeBtn');
+const logoutBtn = document.getElementById('logoutBtn');
+const sheetsList = document.getElementById('sheetsList');
+const refreshSheetsBtn = document.getElementById('refreshSheetsBtn');
+const backToSheetsBtn = document.getElementById('backToSheetsBtn');
+const changeSheetBtn = document.getElementById('changeSheetBtn');
+const selectedSheetNameEl = document.getElementById('selectedSheetName');
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const scannerStatus = document.getElementById('scannerStatus');
+const manualInput = document.getElementById('manualInput');
+const submitManualBtn = document.getElementById('submitManualBtn');
+const recentScansEl = document.getElementById('recentScans');
+const statusMessage = document.getElementById('statusMessage');
+const detectionOverlay = document.getElementById('detectionOverlay');
+const liveReadContent = document.getElementById('liveReadContent');
 
-        // Otherwise wait for the 'playing' event
-        qVideo.addEventListener('playing', function onPlay() {
-            qVideo.removeEventListener('playing', onPlay);
-            console.log('Video playing event received, starting QR loop');
-            if (!qrLoopInterval) startQRLoop();
-        });
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    setupEventListeners();
+    
+    // Wait for Google APIs to load
+    waitForGoogleAPIs();
+});
 
-        // Also set a timeout in case 'playing' doesn't fire
-        setTimeout(() => {
-            if (!qrLoopInterval && qVideo.readyState >= 2) {
-                console.log('Timeout check: video ready, starting QR loop');
-                startQRLoop();
-            }
-        }, 800);
-        return;
-    }
-
-    // Retry a few times to wait for Quagga to insert the video element
-    if (retries < 10) {
-        setTimeout(() => waitForQuaggaVideoAndStartQR(retries + 1), 300);
+function waitForGoogleAPIs() {
+    // Check if both gapi and google are loaded
+    if (typeof gapi !== 'undefined' && typeof google !== 'undefined') {
+        gapiLoaded();
+        gisLoaded();
     } else {
-        console.warn('Could not find Quagga video element to start QR loop');
+        // Check again in 100ms
+        setTimeout(waitForGoogleAPIs, 100);
     }
 }
+
+function setupEventListeners() {
+    authorizeBtn.addEventListener('click', handleAuthClick);
+    logoutBtn.addEventListener('click', handleSignoutClick);
+    refreshSheetsBtn.addEventListener('click', loadGoogleSheets);
+    changeSheetBtn.addEventListener('click', showSheetSelection);
+    backToSheetsBtn.addEventListener('click', () => { showSheetSelection(); });
+    submitManualBtn.addEventListener('click', handleManualSubmit);
     manualInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
             handleManualSubmit();
@@ -463,19 +435,46 @@ function showPromptForId(id) {
     modalIdDisplay.textContent = `ID: ${id}`;
     modalFullName.value = '';
     modalGrade.value = '';
-    promptModal.style.display = 'flex';
-    // pause scanning
+    // Make sure modal is visible and on top
+    try {
+        promptModal.style.display = 'flex';
+        promptModal.style.zIndex = '9999';
+        // prevent background scrolling while modal is open
+        document.body.style.overflow = 'hidden';
+        // focus the first input so keyboard appears on mobile
+        setTimeout(() => {
+            try { modalFullName.focus(); } catch(e){}
+        }, 50);
+    } catch (e) {
+        console.warn('Could not show prompt modal:', e);
+    }
+
+    // pause scanning (safely)
     if (isScanning) {
-        Quagga.pause();
+        try {
+            Quagga.pause();
+            console.log('Scanner paused for modal input');
+        } catch (e) {
+            console.warn('Error pausing Quagga:', e);
+        }
     }
 }
 
 function hidePrompt() {
-    promptModal.style.display = 'none';
+    try {
+        promptModal.style.display = 'none';
+        promptModal.style.zIndex = '';
+        document.body.style.overflow = '';
+    } catch(e) {}
     pendingIdForModal = null;
+    // resume scanning if it was active before
     if (isScanning) {
-        try { Quagga.onProcessed(() => {}); } catch(e){}
-        Quagga.start();
+        try {
+            Quagga.start();
+            console.log('Scanner resumed after modal');
+        } catch(e) {
+            console.warn('Error resuming Quagga:', e);
+        }
     }
 }
 
@@ -734,17 +733,43 @@ function startQRLoop() {
 
 function showDetection(code, isValid = true) {
     clearTimeout(overlayTimeout);
-    
-    if (isValid) {
-        detectionOverlay.className = 'detection-overlay show';
-        detectionOverlay.innerHTML = `✓ Scanned<br><span style="font-size: 32px;">${code}</span>`;
-    } else {
-        detectionOverlay.className = 'detection-overlay show invalid';
-        detectionOverlay.innerHTML = `⚠ Detected<br><span style="font-size: 20px;">${code}</span><br><small style="font-size: 14px;">(Need 9-10 digits)</small>`;
+    // Use inline styles to ensure visibility even if external CSS is not applied correctly.
+    try {
+        detectionOverlay.style.display = 'block';
+        detectionOverlay.style.position = 'absolute';
+        detectionOverlay.style.top = '50%';
+        detectionOverlay.style.left = '50%';
+        detectionOverlay.style.transform = 'translate(-50%,-50%)';
+        detectionOverlay.style.zIndex = '2147483647'; // very high
+        detectionOverlay.style.pointerEvents = 'none';
+        detectionOverlay.style.padding = '12px 18px';
+        detectionOverlay.style.borderRadius = '10px';
+        detectionOverlay.style.textAlign = 'center';
+        detectionOverlay.style.fontWeight = '700';
+        detectionOverlay.style.fontSize = '18px';
+        detectionOverlay.style.color = isValid ? '#fff' : '#111';
+
+        // Ensure overlay is placed after the camera/video nodes so it renders on top
+        try {
+            const cam = document.querySelector('.camera-container');
+            if (cam) cam.appendChild(detectionOverlay);
+        } catch(e) {}
+
+        if (isValid) {
+            // green for success
+            detectionOverlay.style.background = '#28a745';
+            detectionOverlay.innerHTML = `✓ Scanned<br><span style="font-size: 32px;">${code}</span>`;
+        } else {
+            // yellow for warning/invalid
+            detectionOverlay.style.background = '#ffc107';
+            detectionOverlay.innerHTML = `⚠ Detected<br><span style="font-size: 20px;">${code}</span><br><small style="font-size: 14px;">(Need 9-10 digits)</small>`;
+        }
+    } catch (e) {
+        console.warn('Failed to style detection overlay inline:', e);
     }
-    
+
     overlayTimeout = setTimeout(() => {
-        detectionOverlay.classList.remove('show');
+        try { detectionOverlay.style.display = 'none'; } catch(e){}
     }, isValid ? 2000 : 3000);
 }
 

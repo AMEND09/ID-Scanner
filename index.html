@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Attendance Logger</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=2">
 </head>
 <body>
     <div class="container">
@@ -28,7 +28,11 @@
                 <h2>Select a Google Sheet</h2>
                 <p>Choose which spreadsheet to log your scans to:</p>
                 <div id="sheetsList"></div>
-                <button id="refreshSheetsBtn" class="btn-secondary">Refresh Sheets List</button>
+                <div id="tabsList" style="display:none;margin-top:12px;"></div>
+                <div style="display:flex;gap:8px;">
+                    <button id="backToSheetsBtn" class="btn-secondary" style="display:none;">← Back to Sheets</button>
+                    <button id="refreshSheetsBtn" class="btn-secondary">Refresh Sheets List</button>
+                </div>
             </div>
 
             <!-- Scanner Section -->
@@ -100,6 +104,6 @@
     <script src="https://accounts.google.com/gsi/client"></script>
     
     <!-- Load our app -->
-    <script type="module" src="app.js"></script>
+    <script type="module" src="app.js?v=2"></script>
 </body>
 </html>
