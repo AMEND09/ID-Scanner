@@ -788,8 +788,8 @@ function handleManualSubmit() {
         showStatus('Please enter 9-10 digits', 'error');
         return;
     }
-
-    appendToSheet(code);
+    // Append as a structured object so ID goes into column C and date/time into D/E
+    appendToSheet({ id: code });
     manualInput.value = '';
 }
 
