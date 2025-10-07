@@ -11,6 +11,7 @@ let gisInited = false;
 let accessToken = null;
 let selectedSheetId = localStorage.getItem('selectedSheetId');
 let selectedSheetName = localStorage.getItem('selectedSheetName');
+let selectedSheetTab = localStorage.getItem('selectedSheetTab') || null;
 let isScanning = false;
 let recentScans = [];
 // QR scanning state
@@ -28,6 +29,7 @@ const authorizeBtn = document.getElementById('authorizeBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 const sheetsList = document.getElementById('sheetsList');
 const refreshSheetsBtn = document.getElementById('refreshSheetsBtn');
+const backToSheetsBtn = document.getElementById('backToSheetsBtn');
 const changeSheetBtn = document.getElementById('changeSheetBtn');
 const selectedSheetNameEl = document.getElementById('selectedSheetName');
 const video = document.getElementById('video');
@@ -64,6 +66,7 @@ function setupEventListeners() {
     logoutBtn.addEventListener('click', handleSignoutClick);
     refreshSheetsBtn.addEventListener('click', loadGoogleSheets);
     changeSheetBtn.addEventListener('click', showSheetSelection);
+    backToSheetsBtn.addEventListener('click', () => { showSheetSelection(); });
     submitManualBtn.addEventListener('click', handleManualSubmit);
     manualInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
@@ -209,6 +212,9 @@ function showSheetSelection() {
     sheetSelectionSection.style.display = 'block';
     scannerSection.style.display = 'none';
     stopScanner();
+    // Hide any previously shown tabs list when returning to sheets
+    const tabsList = document.getElementById('tabsList');
+    if (tabsList) tabsList.style.display = 'none';
     loadGoogleSheets();
 }
 
@@ -216,7 +222,7 @@ function showScannerSection() {
     authSection.style.display = 'none';
     sheetSelectionSection.style.display = 'none';
     scannerSection.style.display = 'block';
-    selectedSheetNameEl.textContent = `Logging to: ${selectedSheetName}`;
+    selectedSheetNameEl.textContent = `Logging to: ${selectedSheetName}${selectedSheetTab ? ' / ' + selectedSheetTab : ''}`;
     startScanner();
 }
 
@@ -263,12 +269,107 @@ async function loadGoogleSheets() {
 }
 
 function selectSheet(sheetId, sheetName) {
+    // When a sheet (file) is selected, fetch its tabs and prompt for a tab if multiple
     selectedSheetId = sheetId;
     selectedSheetName = sheetName;
     localStorage.setItem('selectedSheetId', sheetId);
     localStorage.setItem('selectedSheetName', sheetName);
+    
+    fetchSpreadsheetTabs(sheetId).then(tabs => {
+        if (!tabs || tabs.length === 0) {
+            // fallback to scanner
+            showScannerSection();
+            showStatus(`Selected: ${sheetName}`, 'success');
+            return;
+        }
+
+        if (tabs.length === 1) {
+            // auto-select single tab
+            selectedSheetTab = tabs[0].properties.title;
+            localStorage.setItem('selectedSheetTab', selectedSheetTab);
+            showScannerSection();
+            showStatus(`Selected: ${sheetName} / ${selectedSheetTab}`, 'success');
+            return;
+        }
+
+        // multiple tabs - show tab chooser
+        showTabChooser(sheetName, tabs);
+    }).catch(err => {
+        console.error('Error fetching tabs:', err);
+        // Inform the user and allow manual tab entry as a fallback
+        showStatus('Unable to read sheet tabs (permissions or network). Please enter tab name manually.', 'error');
+        // Ask user for a tab name; default to Sheet1
+        const manualTab = window.prompt(`Could not read tabs for "${sheetName}". Enter the sheet (tab) name to use:`, localStorage.getItem('selectedSheetTab') || 'Sheet1');
+        if (manualTab) {
+            selectedSheetTab = manualTab;
+            localStorage.setItem('selectedSheetTab', selectedSheetTab);
+            showScannerSection();
+            showStatus(`Selected: ${selectedSheetName} / ${selectedSheetTab}`, 'success');
+        } else {
+            // If user cancels, fall back to scanner without setting tab
+            showScannerSection();
+        }
+    });
+}
+
+async function fetchSpreadsheetTabs(spreadsheetId) {
+    try {
+        const resp = await gapi.client.sheets.spreadsheets.get({ spreadsheetId, fields: 'sheets.properties' });
+        return resp.result.sheets || [];
+    } catch (e) {
+        console.error('Error fetching spreadsheet tabs:', e);
+        throw e;
+    }
+}
+
+function showTabChooser(sheetName, tabs) {
+    // Populate the existing #tabsList inside the sheet selection section so we don't
+    // replace the whole section (which would remove event listeners and controls).
+    let tabsList = document.getElementById('tabsList');
+    // If the placeholder isn't present (older markup), create and append it.
+    if (!tabsList) {
+        tabsList = document.createElement('div');
+        tabsList.id = 'tabsList';
+        tabsList.style.marginTop = '12px';
+        sheetSelectionSection.appendChild(tabsList);
+    }
+
+    // Optionally show a header so users know what to pick
+    let header = sheetSelectionSection.querySelector('.tabs-header');
+    if (!header) {
+        header = document.createElement('h2');
+        header.className = 'tabs-header';
+        sheetSelectionSection.insertBefore(header, sheetSelectionSection.firstChild);
+    }
+    header.textContent = `Select a tab in ${sheetName}`;
+
+    // Clear any existing tabs then populate
+    tabsList.innerHTML = '';
+    // Ensure the tabs container is visible and hide the sheets list to avoid confusion
+    tabsList.style.display = 'block';
+    const sheetsListEl = document.getElementById('sheetsList');
+    if (sheetsListEl) sheetsListEl.style.display = 'none';
+    tabs.forEach(t => {
+        const btn = document.createElement('button');
+        btn.className = 'btn-sheet';
+        btn.textContent = t.properties.title;
+        btn.onclick = () => selectTab(t.properties.title);
+        tabsList.appendChild(btn);
+    });
+
+    // show back button and hide refresh while choosing a tab
+    backToSheetsBtn.style.display = 'inline-block';
+    refreshSheetsBtn.style.display = 'none';
+    sheetSelectionSection.style.display = 'block';
+}
+
+function selectTab(tabName) {
+    selectedSheetTab = tabName;
+    localStorage.setItem('selectedSheetTab', tabName);
+    backToSheetsBtn.style.display = 'none';
+    refreshSheetsBtn.style.display = 'inline-block';
     showScannerSection();
-    showStatus(`Selected: ${sheetName}`, 'success');
+    showStatus(`Selected: ${selectedSheetName} / ${selectedSheetTab}`, 'success');
 }
 
 async function appendToSheet(code) {
@@ -296,9 +397,10 @@ async function appendToSheet(code) {
     }
 
     try {
+        const sheetRange = `${selectedSheetTab || 'Sheet1'}!A:E`;
         await gapi.client.sheets.spreadsheets.values.append({
             spreadsheetId: selectedSheetId,
-            range: 'Sheet1!A:E',
+            range: sheetRange,
             valueInputOption: 'USER_ENTERED',
             resource: {
                 values
@@ -333,19 +435,46 @@ function showPromptForId(id) {
     modalIdDisplay.textContent = `ID: ${id}`;
     modalFullName.value = '';
     modalGrade.value = '';
-    promptModal.style.display = 'flex';
-    // pause scanning
+    // Make sure modal is visible and on top
+    try {
+        promptModal.style.display = 'flex';
+        promptModal.style.zIndex = '9999';
+        // prevent background scrolling while modal is open
+        document.body.style.overflow = 'hidden';
+        // focus the first input so keyboard appears on mobile
+        setTimeout(() => {
+            try { modalFullName.focus(); } catch(e){}
+        }, 50);
+    } catch (e) {
+        console.warn('Could not show prompt modal:', e);
+    }
+
+    // pause scanning (safely)
     if (isScanning) {
-        Quagga.pause();
+        try {
+            Quagga.pause();
+            console.log('Scanner paused for modal input');
+        } catch (e) {
+            console.warn('Error pausing Quagga:', e);
+        }
     }
 }
 
 function hidePrompt() {
-    promptModal.style.display = 'none';
+    try {
+        promptModal.style.display = 'none';
+        promptModal.style.zIndex = '';
+        document.body.style.overflow = '';
+    } catch(e) {}
     pendingIdForModal = null;
+    // resume scanning if it was active before
     if (isScanning) {
-        try { Quagga.onProcessed(() => {}); } catch(e){}
-        Quagga.start();
+        try {
+            Quagga.start();
+            console.log('Scanner resumed after modal');
+        } catch(e) {
+            console.warn('Error resuming Quagga:', e);
+        }
     }
 }
 
@@ -604,17 +733,43 @@ function startQRLoop() {
 
 function showDetection(code, isValid = true) {
     clearTimeout(overlayTimeout);
-    
-    if (isValid) {
-        detectionOverlay.className = 'detection-overlay show';
-        detectionOverlay.innerHTML = `✓ Scanned<br><span style="font-size: 32px;">${code}</span>`;
-    } else {
-        detectionOverlay.className = 'detection-overlay show invalid';
-        detectionOverlay.innerHTML = `⚠ Detected<br><span style="font-size: 20px;">${code}</span><br><small style="font-size: 14px;">(Need 9-10 digits)</small>`;
+    // Use inline styles to ensure visibility even if external CSS is not applied correctly.
+    try {
+        detectionOverlay.style.display = 'block';
+        detectionOverlay.style.position = 'absolute';
+        detectionOverlay.style.top = '50%';
+        detectionOverlay.style.left = '50%';
+        detectionOverlay.style.transform = 'translate(-50%,-50%)';
+        detectionOverlay.style.zIndex = '2147483647'; // very high
+        detectionOverlay.style.pointerEvents = 'none';
+        detectionOverlay.style.padding = '12px 18px';
+        detectionOverlay.style.borderRadius = '10px';
+        detectionOverlay.style.textAlign = 'center';
+        detectionOverlay.style.fontWeight = '700';
+        detectionOverlay.style.fontSize = '18px';
+        detectionOverlay.style.color = isValid ? '#fff' : '#111';
+
+        // Ensure overlay is placed after the camera/video nodes so it renders on top
+        try {
+            const cam = document.querySelector('.camera-container');
+            if (cam) cam.appendChild(detectionOverlay);
+        } catch(e) {}
+
+        if (isValid) {
+            // green for success
+            detectionOverlay.style.background = '#28a745';
+            detectionOverlay.innerHTML = `✓ Scanned<br><span style="font-size: 32px;">${code}</span>`;
+        } else {
+            // yellow for warning/invalid
+            detectionOverlay.style.background = '#ffc107';
+            detectionOverlay.innerHTML = `⚠ Detected<br><span style="font-size: 20px;">${code}</span><br><small style="font-size: 14px;">(Need 9-10 digits)</small>`;
+        }
+    } catch (e) {
+        console.warn('Failed to style detection overlay inline:', e);
     }
-    
+
     overlayTimeout = setTimeout(() => {
-        detectionOverlay.classList.remove('show');
+        try { detectionOverlay.style.display = 'none'; } catch(e){}
     }, isValid ? 2000 : 3000);
 }
 
