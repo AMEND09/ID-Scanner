@@ -1,70 +1,101 @@
 // Load configuration
 import { CONFIG } from './config.js';
+    // Initialize Quagga directly. Quagga will request camera permissions itself.
+    Quagga.init({
+        inputStream: {
+            name: "Live",
+            type: "LiveStream",
+            target: document.querySelector('#video'),
+            constraints: {
+                width: { ideal: 1280, min: 640 },
+                height: { ideal: 720, min: 480 },
+                facingMode: "environment"
+            }
+        },
+        decoder: {
+            readers: [
+                "code_128_reader",
+                "ean_reader",
+                "ean_8_reader",
+                "code_39_reader",
+                "code_39_vin_reader",
+                "codabar_reader",
+                "upc_reader",
+                "upc_e_reader",
+                "i2of5_reader"
+            ],
+            debug: {
+                drawBoundingBox: true,
+                showFrequency: false,
+                drawScanline: true,
+                showPattern: false
+            }
+        },
+        locate: true,
+        numOfWorkers: 0,
+        frequency: 10
+    }, function (err) {
+        if (err) {
+            console.error('Error starting scanner:', err);
+            scannerStatus.textContent = 'Camera initialization failed: ' + (err.message || err);
+            scannerStatus.style.background = '#f8d7da';
+            scannerStatus.style.color = '#721c24';
+            return;
+        }
 
-// Google API Configuration
-const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly';
+        try {
+            console.log('Quagga initialized, starting...');
+            Quagga.start();
+            isScanning = true;
+            scannerStatus.textContent = 'Scanner active - Position barcode in view';
+            scannerStatus.style.background = '#d4edda';
+            scannerStatus.style.color = '#155724';
 
-// State
-let tokenClient;
-let gapiInited = false;
-let gisInited = false;
-let accessToken = null;
-let selectedSheetId = localStorage.getItem('selectedSheetId');
-let selectedSheetName = localStorage.getItem('selectedSheetName');
-let isScanning = false;
-let recentScans = [];
-// QR scanning state
-let overlayTimeout;
-let lastDetectedCode = '';
-let lastDetectedTime = 0;
-let qrLoopInterval = null;
-let qrStartRetryTimeout = null;
+            // Ensure we only start the QR loop once the internal video element is playing.
+            waitForQuaggaVideoAndStartQR();
+        } catch (e) {
+            console.error('Failed to start Quagga:', e);
+            scannerStatus.textContent = 'Failed to start scanner: ' + e.message;
+            scannerStatus.style.background = '#f8d7da';
+            scannerStatus.style.color = '#721c24';
+        }
+    });
+    submitManualBtn.addEventListener('click', handleManualSubmit);
 
-// DOM Elements
-const authSection = document.getElementById('authSection');
-const sheetSelectionSection = document.getElementById('sheetSelectionSection');
-const scannerSection = document.getElementById('scannerSection');
-const authorizeBtn = document.getElementById('authorizeBtn');
-const logoutBtn = document.getElementById('logoutBtn');
-const sheetsList = document.getElementById('sheetsList');
-const refreshSheetsBtn = document.getElementById('refreshSheetsBtn');
-const changeSheetBtn = document.getElementById('changeSheetBtn');
-const selectedSheetNameEl = document.getElementById('selectedSheetName');
-const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
-const scannerStatus = document.getElementById('scannerStatus');
-const manualInput = document.getElementById('manualInput');
-const submitManualBtn = document.getElementById('submitManualBtn');
-const recentScansEl = document.getElementById('recentScans');
-const statusMessage = document.getElementById('statusMessage');
-const detectionOverlay = document.getElementById('detectionOverlay');
-const liveReadContent = document.getElementById('liveReadContent');
+function waitForQuaggaVideoAndStartQR(retries = 0) {
+    const qVideo = document.querySelector('#video video');
+    if (qVideo) {
+        // If the video is already playing, start the QR loop immediately.
+        if (qVideo.readyState >= 2 && !qrLoopInterval) {
+            console.log('Video ready (readyState=', qVideo.readyState, '), starting QR loop');
+            startQRLoop();
+            return;
+        }
 
-// Initialize
-document.addEventListener('DOMContentLoaded', () => {
-    setupEventListeners();
-    
-    // Wait for Google APIs to load
-    waitForGoogleAPIs();
-});
+        // Otherwise wait for the 'playing' event
+        qVideo.addEventListener('playing', function onPlay() {
+            qVideo.removeEventListener('playing', onPlay);
+            console.log('Video playing event received, starting QR loop');
+            if (!qrLoopInterval) startQRLoop();
+        });
 
-function waitForGoogleAPIs() {
-    // Check if both gapi and google are loaded
-    if (typeof gapi !== 'undefined' && typeof google !== 'undefined') {
-        gapiLoaded();
-        gisLoaded();
+        // Also set a timeout in case 'playing' doesn't fire
+        setTimeout(() => {
+            if (!qrLoopInterval && qVideo.readyState >= 2) {
+                console.log('Timeout check: video ready, starting QR loop');
+                startQRLoop();
+            }
+        }, 800);
+        return;
+    }
+
+    // Retry a few times to wait for Quagga to insert the video element
+    if (retries < 10) {
+        setTimeout(() => waitForQuaggaVideoAndStartQR(retries + 1), 300);
     } else {
-        // Check again in 100ms
-        setTimeout(waitForGoogleAPIs, 100);
+        console.warn('Could not find Quagga video element to start QR loop');
     }
 }
-
-function setupEventListeners() {
-    authorizeBtn.addEventListener('click', handleAuthClick);
-    logoutBtn.addEventListener('click', handleSignoutClick);
-    refreshSheetsBtn.addEventListener('click', loadGoogleSheets);
-    changeSheetBtn.addEventListener('click', showSheetSelection);
-    submitManualBtn.addEventListener('click', handleManualSubmit);
     manualInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
             handleManualSubmit();
@@ -209,6 +240,9 @@ function showSheetSelection() {
     sheetSelectionSection.style.display = 'block';
     scannerSection.style.display = 'none';
     stopScanner();
+    // Hide any previously shown tabs list when returning to sheets
+    const tabsList = document.getElementById('tabsList');
+    if (tabsList) tabsList.style.display = 'none';
     loadGoogleSheets();
 }
 
@@ -216,7 +250,7 @@ function showScannerSection() {
     authSection.style.display = 'none';
     sheetSelectionSection.style.display = 'none';
     scannerSection.style.display = 'block';
-    selectedSheetNameEl.textContent = `Logging to: ${selectedSheetName}`;
+    selectedSheetNameEl.textContent = `Logging to: ${selectedSheetName}${selectedSheetTab ? ' / ' + selectedSheetTab : ''}`;
     startScanner();
 }
 
@@ -263,12 +297,107 @@ async function loadGoogleSheets() {
 }
 
 function selectSheet(sheetId, sheetName) {
+    // When a sheet (file) is selected, fetch its tabs and prompt for a tab if multiple
     selectedSheetId = sheetId;
     selectedSheetName = sheetName;
     localStorage.setItem('selectedSheetId', sheetId);
     localStorage.setItem('selectedSheetName', sheetName);
+    
+    fetchSpreadsheetTabs(sheetId).then(tabs => {
+        if (!tabs || tabs.length === 0) {
+            // fallback to scanner
+            showScannerSection();
+            showStatus(`Selected: ${sheetName}`, 'success');
+            return;
+        }
+
+        if (tabs.length === 1) {
+            // auto-select single tab
+            selectedSheetTab = tabs[0].properties.title;
+            localStorage.setItem('selectedSheetTab', selectedSheetTab);
+            showScannerSection();
+            showStatus(`Selected: ${sheetName} / ${selectedSheetTab}`, 'success');
+            return;
+        }
+
+        // multiple tabs - show tab chooser
+        showTabChooser(sheetName, tabs);
+    }).catch(err => {
+        console.error('Error fetching tabs:', err);
+        // Inform the user and allow manual tab entry as a fallback
+        showStatus('Unable to read sheet tabs (permissions or network). Please enter tab name manually.', 'error');
+        // Ask user for a tab name; default to Sheet1
+        const manualTab = window.prompt(`Could not read tabs for "${sheetName}". Enter the sheet (tab) name to use:`, localStorage.getItem('selectedSheetTab') || 'Sheet1');
+        if (manualTab) {
+            selectedSheetTab = manualTab;
+            localStorage.setItem('selectedSheetTab', selectedSheetTab);
+            showScannerSection();
+            showStatus(`Selected: ${selectedSheetName} / ${selectedSheetTab}`, 'success');
+        } else {
+            // If user cancels, fall back to scanner without setting tab
+            showScannerSection();
+        }
+    });
+}
+
+async function fetchSpreadsheetTabs(spreadsheetId) {
+    try {
+        const resp = await gapi.client.sheets.spreadsheets.get({ spreadsheetId, fields: 'sheets.properties' });
+        return resp.result.sheets || [];
+    } catch (e) {
+        console.error('Error fetching spreadsheet tabs:', e);
+        throw e;
+    }
+}
+
+function showTabChooser(sheetName, tabs) {
+    // Populate the existing #tabsList inside the sheet selection section so we don't
+    // replace the whole section (which would remove event listeners and controls).
+    let tabsList = document.getElementById('tabsList');
+    // If the placeholder isn't present (older markup), create and append it.
+    if (!tabsList) {
+        tabsList = document.createElement('div');
+        tabsList.id = 'tabsList';
+        tabsList.style.marginTop = '12px';
+        sheetSelectionSection.appendChild(tabsList);
+    }
+
+    // Optionally show a header so users know what to pick
+    let header = sheetSelectionSection.querySelector('.tabs-header');
+    if (!header) {
+        header = document.createElement('h2');
+        header.className = 'tabs-header';
+        sheetSelectionSection.insertBefore(header, sheetSelectionSection.firstChild);
+    }
+    header.textContent = `Select a tab in ${sheetName}`;
+
+    // Clear any existing tabs then populate
+    tabsList.innerHTML = '';
+    // Ensure the tabs container is visible and hide the sheets list to avoid confusion
+    tabsList.style.display = 'block';
+    const sheetsListEl = document.getElementById('sheetsList');
+    if (sheetsListEl) sheetsListEl.style.display = 'none';
+    tabs.forEach(t => {
+        const btn = document.createElement('button');
+        btn.className = 'btn-sheet';
+        btn.textContent = t.properties.title;
+        btn.onclick = () => selectTab(t.properties.title);
+        tabsList.appendChild(btn);
+    });
+
+    // show back button and hide refresh while choosing a tab
+    backToSheetsBtn.style.display = 'inline-block';
+    refreshSheetsBtn.style.display = 'none';
+    sheetSelectionSection.style.display = 'block';
+}
+
+function selectTab(tabName) {
+    selectedSheetTab = tabName;
+    localStorage.setItem('selectedSheetTab', tabName);
+    backToSheetsBtn.style.display = 'none';
+    refreshSheetsBtn.style.display = 'inline-block';
     showScannerSection();
-    showStatus(`Selected: ${sheetName}`, 'success');
+    showStatus(`Selected: ${selectedSheetName} / ${selectedSheetTab}`, 'success');
 }
 
 async function appendToSheet(code) {
@@ -296,9 +425,10 @@ async function appendToSheet(code) {
     }
 
     try {
+        const sheetRange = `${selectedSheetTab || 'Sheet1'}!A:E`;
         await gapi.client.sheets.spreadsheets.values.append({
             spreadsheetId: selectedSheetId,
-            range: 'Sheet1!A:E',
+            range: sheetRange,
             valueInputOption: 'USER_ENTERED',
             resource: {
                 values
