@@ -14,6 +14,13 @@ let selectedSheetName = localStorage.getItem('selectedSheetName');
 let selectedSheetTab = localStorage.getItem('selectedSheetTab') || null;
 let isScanning = false;
 let recentScans = [];
+// Load recent scans from localStorage so scans persist across sign-ins
+try {
+    const stored = localStorage.getItem('recentScans');
+    if (stored) recentScans = JSON.parse(stored) || [];
+} catch (e) {
+    console.warn('Failed to parse recentScans from localStorage', e);
+}
 // QR scanning state
 let overlayTimeout;
 let lastDetectedCode = '';
@@ -72,6 +79,34 @@ function setupEventListeners() {
         if (e.key === 'Enter') {
             handleManualSubmit();
         }
+    });
+
+    // Export modal wiring (if present)
+    const exportBtn = document.getElementById('exportBtn');
+    const exportModal = document.getElementById('exportModal');
+    const exportCloseBtn = document.getElementById('exportCloseBtn');
+    const exportSheetsBtn = document.getElementById('exportSheetsBtn');
+    const exportJsonBtn = document.getElementById('exportJsonBtn');
+    const exportCsvBtn = document.getElementById('exportCsvBtn');
+    const exportXlsxBtn = document.getElementById('exportXlsxBtn');
+    const exportSheetsOptions = document.getElementById('exportSheetsOptions');
+    const exportSheetsConfirm = document.getElementById('exportSheetsConfirm');
+    const exportSheetsCancel = document.getElementById('exportSheetsCancel');
+
+    if (exportBtn) exportBtn.addEventListener('click', () => { if (exportModal) exportModal.style.display = 'flex'; });
+    if (exportCloseBtn) exportCloseBtn.addEventListener('click', () => { if (exportModal) exportModal.style.display = 'none'; });
+    if (exportSheetsBtn) exportSheetsBtn.addEventListener('click', () => { if (exportSheetsOptions) exportSheetsOptions.style.display = 'block'; });
+    if (exportSheetsCancel) exportSheetsCancel.addEventListener('click', () => { if (exportSheetsOptions) exportSheetsOptions.style.display = 'none'; });
+    if (exportJsonBtn) exportJsonBtn.addEventListener('click', exportRecentScansAsJson);
+    if (exportCsvBtn) exportCsvBtn.addEventListener('click', exportRecentScansAsCsv);
+    if (exportXlsxBtn) exportXlsxBtn.addEventListener('click', exportRecentScansAsXlsx);
+    if (exportSheetsConfirm) exportSheetsConfirm.addEventListener('click', () => {
+        const tab = document.getElementById('exportSheetTab').value || (selectedSheetTab || 'Sheet1');
+        batchAppendToSheet(tab).then(success => {
+            if (success) showStatus('Exported to Google Sheets', 'success');
+            else showStatus('Failed to export to Google Sheets', 'error');
+        });
+        if (exportModal) exportModal.style.display = 'none';
     });
 }
 
@@ -402,6 +437,7 @@ async function appendToSheet(code) {
             spreadsheetId: selectedSheetId,
             range: sheetRange,
             valueInputOption: 'USER_ENTERED',
+            insertDataOption: 'INSERT_ROWS',
             resource: {
                 values
             }
@@ -802,10 +838,9 @@ function addRecentScan(code, success) {
     };
 
     recentScans.unshift(scan);
-    if (recentScans.length > 10) {
-        recentScans.pop();
-    }
-
+    // keep a reasonable local history (200 items)
+    if (recentScans.length > 200) recentScans.length = 200;
+    try { localStorage.setItem('recentScans', JSON.stringify(recentScans)); } catch (e) { console.warn('Failed to save recentScans', e); }
     updateRecentScansDisplay();
 }
 
@@ -815,7 +850,7 @@ function updateRecentScansDisplay() {
         return;
     }
 
-    recentScansEl.innerHTML = recentScans.map(scan => `
+    recentScansEl.innerHTML = recentScans.slice(0,50).map(scan => `
         <div class="scan-item ${scan.success ? 'success' : 'error'}">
             <div>
                 <div class="scan-code">${scan.code}</div>
@@ -824,6 +859,108 @@ function updateRecentScansDisplay() {
             <div>${scan.success ? '✓' : '✗'}</div>
         </div>
     `).join('');
+}
+
+// Export helpers
+function exportRecentScansAsJson() {
+    if (!recentScans || recentScans.length === 0) { showStatus('No scans to export', 'error'); return; }
+    const data = JSON.stringify(recentScans, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `scans-${new Date().toISOString()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showStatus('JSON exported', 'success');
+}
+
+function exportRecentScansAsCsv() {
+    if (!recentScans || recentScans.length === 0) { showStatus('No scans to export', 'error'); return; }
+    const rows = recentScans.map(s => [s.code, s.timestamp, s.success ? 'true' : 'false']);
+    const header = ['code', 'timestamp', 'success'];
+    const csv = [header, ...rows].map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `scans-${new Date().toISOString()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showStatus('CSV exported', 'success');
+}
+
+function exportRecentScansAsXlsx() {
+    if (!recentScans || recentScans.length === 0) { showStatus('No scans to export', 'error'); return; }
+    try {
+        const ws_data = [["code","timestamp","success"], ...recentScans.map(s => [s.code, s.timestamp, s.success ? 'true' : 'false'])];
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.aoa_to_sheet(ws_data);
+        XLSX.utils.book_append_sheet(wb, ws, 'Scans');
+        const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+        const blob = new Blob([wbout], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `scans-${new Date().toISOString()}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        showStatus('XLSX exported', 'success');
+    } catch (e) {
+        console.error('XLSX export failed', e);
+        showStatus('XLSX export failed', 'error');
+    }
+}
+
+// Batch append recent scans to Google Sheets (all at once)
+async function batchAppendToSheet(tabName) {
+    if (!recentScans || recentScans.length === 0) return false;
+    if (!selectedSheetId) {
+        showStatus('No Google Sheet selected. Please sign in and choose a sheet.', 'error');
+        return false;
+    }
+
+    // Convert recentScans into rows matching A:E (FullName/Grade/ID/Date/Time) best-effort
+    const rows = recentScans.map(s => {
+        let parsed = s.code;
+        try { if (typeof parsed === 'string' && (parsed.startsWith('{') || parsed.startsWith('['))) parsed = JSON.parse(parsed); } catch(e) {}
+        if (parsed && typeof parsed === 'object' && (parsed.id || parsed.fn || parsed.ln || parsed.gr)) {
+            const fullName = ((parsed.fn || '') + ' ' + (parsed.ln || '')).trim();
+            return [fullName || '', parsed.gr || '', parsed.id || '', new Date(s.timestamp).toLocaleDateString(), new Date(s.timestamp).toLocaleTimeString()];
+        }
+        try {
+            const dt = new Date(s.timestamp);
+            return [s.code, '', '', dt.toLocaleDateString(), dt.toLocaleTimeString()];
+        } catch (e) {
+            return [s.code, '', '', '', ''];
+        }
+    });
+
+    const sheetRange = `${tabName || (selectedSheetTab || 'Sheet1')}!A:E`;
+
+    try {
+        const resp = await gapi.client.sheets.spreadsheets.values.append({
+            spreadsheetId: selectedSheetId,
+            range: sheetRange,
+            valueInputOption: 'USER_ENTERED',
+            insertDataOption: 'INSERT_ROWS',
+            resource: { values: rows }
+        });
+        // mark appended scans as success locally
+        recentScans = recentScans.map(s => ({ ...s, success: true }));
+        try { localStorage.setItem('recentScans', JSON.stringify(recentScans)); } catch(e){}
+        updateRecentScansDisplay();
+        return true;
+    } catch (e) {
+        console.error('Batch append failed', e);
+        return false;
+    }
 }
 
 // Status Messages

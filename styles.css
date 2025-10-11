@@ -61,6 +61,10 @@ main {
     color: var(--tsa-blue);
 }
 
+/* Export modal tweaks */
+.modal-content input#exportSheetTab { margin-top:6px; margin-bottom:6px; padding:8px; border:1px solid #e7eefc; border-radius:6px; width:100%; }
+
+
 .card p {
     color: #666;
     margin-bottom: 15px;
@@ -290,3 +294,6 @@ main {
       .card { padding:14px; }
       .btn-primary, .btn-secondary { padding:10px 12px; font-size:14px; }
     }
+
+/* Small layout for export button next to change sheet */
+.card > div[style*="display:flex"] { align-items:center; }
