@@ -40,7 +40,10 @@
                 <div class="card">
                     <h2>Ready to Scan</h2>
                     <p id="selectedSheetName" class="info-text"></p>
-                    <button id="changeSheetBtn" class="btn-secondary">Change Sheet</button>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button id="changeSheetBtn" class="btn-secondary">Change Sheet</button>
+                        <button id="exportBtn" class="btn-primary">Export</button>
+                    </div>
                 </div>
 
                 <!-- Camera View -->
@@ -102,8 +105,36 @@
     <!-- Load Google API - Remove async/defer to ensure proper loading order -->
     <script src="https://apis.google.com/js/api.js"></script>
     <script src="https://accounts.google.com/gsi/client"></script>
+    <!-- SheetJS for XLSX export -->
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
     
     <!-- Load our app -->
     <script type="module" src="app.js?v=2"></script>
+
+    <!-- Export Modal -->
+    <div id="exportModal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <h3>Export Recent Scans</h3>
+            <p>Choose export destination and options. Recent scans will be exported in the order shown.</p>
+            <label>Export format</label>
+            <div style="display:flex;gap:8px;margin-bottom:8px;">
+                <button id="exportSheetsBtn" class="btn-secondary">Append to Google Sheets</button>
+                <button id="exportJsonBtn" class="btn-secondary">Export JSON</button>
+                <button id="exportCsvBtn" class="btn-secondary">Export CSV</button>
+                <button id="exportXlsxBtn" class="btn-secondary">Export XLSX</button>
+            </div>
+            <div id="exportSheetsOptions" style="display:none;margin-top:8px;">
+                <label>Sheet name / tab</label>
+                <input id="exportSheetTab" placeholder="Sheet1 or a tab name" value="Sheet1">
+                <div style="display:flex;gap:8px;margin-top:8px;">
+                    <button id="exportSheetsConfirm" class="btn-primary">Append Now</button>
+                    <button id="exportSheetsCancel" class="btn-secondary">Cancel</button>
+                </div>
+            </div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+                <button id="exportCloseBtn" class="btn-secondary">Close</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
