@@ -1,6 +1,19 @@
 // Load configuration
 import { CONFIG } from './config.js';
 
+// Register service worker for PWA functionality
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then((registration) => {
+        console.log('ServiceWorker registration successful with scope: ', registration.scope);
+      })
+      .catch((error) => {
+        console.log('ServiceWorker registration failed: ', error);
+      });
+  });
+}
+
 // Google API Configuration
 const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly';
 
@@ -92,6 +105,9 @@ function setupEventListeners() {
     const exportSheetsOptions = document.getElementById('exportSheetsOptions');
     const exportSheetsConfirm = document.getElementById('exportSheetsConfirm');
     const exportSheetsCancel = document.getElementById('exportSheetsCancel');
+    
+    // Camera flip button
+    const flipCameraBtn = document.getElementById('flipCameraBtn');
 
     if (exportBtn) exportBtn.addEventListener('click', () => { if (exportModal) exportModal.style.display = 'flex'; });
     if (exportCloseBtn) exportCloseBtn.addEventListener('click', () => { if (exportModal) exportModal.style.display = 'none'; });
@@ -108,6 +124,7 @@ function setupEventListeners() {
         });
         if (exportModal) exportModal.style.display = 'none';
     });
+    if (flipCameraBtn) flipCameraBtn.addEventListener('click', flipCamera);
 }
 
 // Google API Initialization
@@ -533,12 +550,15 @@ modalSaveBtn.addEventListener('click', async () => {
     hidePrompt();
 });
 
+// Camera state
+let currentFacingMode = "environment"; // Default to rear camera
+
 // Scanner Functions
 function startScanner() {
     if (isScanning) return;
 
     // Request camera permissions first
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: currentFacingMode } })
         .then(function(stream) {
             // Stop the test stream
             stream.getTracks().forEach(track => track.stop());
@@ -552,7 +572,7 @@ function startScanner() {
                     constraints: {
                         width: { ideal: 1280, min: 640 },
                         height: { ideal: 720, min: 480 },
-                        facingMode: "environment"
+                        facingMode: currentFacingMode
                     }
                 },
                 decoder: {
@@ -595,6 +615,92 @@ function startScanner() {
 
                 // Start QR polling loop
                 startQRLoop();
+                
+                // Set up detection handler
+                Quagga.onDetected(async function (result) {
+                    const code = result.codeResult.code;
+                    const now = Date.now();
+                    const valid = /^\d{9,10}$/.test(code);
+
+                    // Try parsing structured JSON payloads
+                    let parsed = code;
+                    try {
+                        if (typeof code === 'string' && (code.trim().startsWith('{') || code.trim().startsWith('['))) {
+                            parsed = JSON.parse(code);
+                        }
+                    } catch (e) {
+                        // leave parsed as raw string
+                    }
+
+                    // Determine validity for display when parsed is a string
+                    const displayValue = (typeof parsed === 'object' ? (parsed.fn || parsed.ln ? (parsed.fn + ' ' + parsed.ln).trim() : JSON.stringify(parsed)) : parsed);
+                    const isValidNumeric = (/^\d{9,10}$/.test(parsed));
+                    const isStructured = (typeof parsed === 'object' && parsed !== null && (parsed.id || parsed.fn || parsed.ln || parsed.gr));
+
+                    // Always show detection overlay and update live read with validity
+                    showDetection(displayValue, isValidNumeric || isStructured);
+                    updateLiveRead('barcode', displayValue, isValidNumeric || isStructured);
+
+                    // If neither numeric nor structured, show and return
+                    if (!(isValidNumeric || isStructured)) {
+                        console.log('Invalid code format:', code);
+                        return;
+                    }
+
+                    // Prevent duplicate scans within 3 seconds
+                    if (displayValue === lastDetectedCode && now - lastDetectedTime < 3000) {
+                        return;
+                    }
+
+                    lastDetectedCode = displayValue;
+                    lastDetectedTime = now;
+
+                    // Provide haptic feedback if available
+                    if (navigator.vibrate) {
+                        navigator.vibrate(200);
+                    }
+
+                    scannerStatus.textContent = `✓ Detected: ${displayValue}`;
+                    scannerStatus.style.background = '#d4edda';
+                    scannerStatus.style.color = '#155724';
+
+                    // If structured, append immediately
+                    if (isStructured) {
+                        await appendToSheet(parsed);
+                        return;
+                    }
+
+                    // If numeric-only ID, prompt the user for name/grade
+                    if (isValidNumeric) {
+                        showPromptForId(displayValue);
+                        return;
+                    }
+                });
+                
+                // Also show processing feedback
+                Quagga.onProcessed(function (result) {
+                    const drawingCtx = Quagga.canvas.ctx.overlay;
+                    const drawingCanvas = Quagga.canvas.dom.overlay;
+
+                    if (result) {
+                        if (result.boxes) {
+                            drawingCtx.clearRect(0, 0, parseInt(drawingCanvas.getAttribute("width")), parseInt(drawingCanvas.getAttribute("height")));
+                            result.boxes.filter(function (box) {
+                                return box !== result.box;
+                            }).forEach(function (box) {
+                                Quagga.ImageDebug.drawPath(box, {x: 0, y: 1}, drawingCtx, {color: "green", lineWidth: 2});
+                            });
+                        }
+
+                        if (result.box) {
+                            Quagga.ImageDebug.drawPath(result.box, {x: 0, y: 1}, drawingCtx, {color: "#00F", lineWidth: 2});
+                        }
+
+                        if (result.codeResult && result.codeResult.code) {
+                            Quagga.ImageDebug.drawPath(result.line, {x: 'x', y: 'y'}, drawingCtx, {color: 'red', lineWidth: 3});
+                        }
+                    }
+                });
             });
         })
         .catch(function(err) {
@@ -603,91 +709,27 @@ function startScanner() {
             scannerStatus.style.background = '#f8d7da';
             scannerStatus.style.color = '#721c24';
         });
+}
 
-    Quagga.onDetected(async function (result) {
-        const code = result.codeResult.code;
-        const now = Date.now();
-        const valid = /^\d{9,10}$/.test(code);
-
-        // Try parsing structured JSON payloads
-        let parsed = code;
-        try {
-            if (typeof code === 'string' && (code.trim().startsWith('{') || code.trim().startsWith('['))) {
-                parsed = JSON.parse(code);
-            }
-        } catch (e) {
-            // leave parsed as raw string
-        }
-
-        // Determine validity for display when parsed is a string
-        const displayValue = (typeof parsed === 'object' ? (parsed.fn || parsed.ln ? (parsed.fn + ' ' + parsed.ln).trim() : JSON.stringify(parsed)) : parsed);
-        const isValidNumeric = (/^\d{9,10}$/.test(parsed));
-        const isStructured = (typeof parsed === 'object' && parsed !== null && (parsed.id || parsed.fn || parsed.ln || parsed.gr));
-
-        // Always show detection overlay and update live read with validity
-        showDetection(displayValue, isValidNumeric || isStructured);
-        updateLiveRead('barcode', displayValue, isValidNumeric || isStructured);
-
-        // If neither numeric nor structured, show and return
-        if (!(isValidNumeric || isStructured)) {
-            console.log('Invalid code format:', code);
-            return;
-        }
-
-        // Prevent duplicate scans within 3 seconds
-        if (displayValue === lastDetectedCode && now - lastDetectedTime < 3000) {
-            return;
-        }
-
-        lastDetectedCode = displayValue;
-        lastDetectedTime = now;
-
-        // Provide haptic feedback if available
-        if (navigator.vibrate) {
-            navigator.vibrate(200);
-        }
-
-        scannerStatus.textContent = `✓ Detected: ${displayValue}`;
-        scannerStatus.style.background = '#d4edda';
-        scannerStatus.style.color = '#155724';
-
-        // If structured, append immediately
-        if (isStructured) {
-            await appendToSheet(parsed);
-            return;
-        }
-
-        // If numeric-only ID, prompt the user for name/grade
-        if (isValidNumeric) {
-            showPromptForId(displayValue);
-            return;
-        }
-    });
+// Function to flip the camera
+function flipCamera() {
+    if (!isScanning) {
+        showStatus('Scanner not active', 'error');
+        return;
+    }
     
-    // Also show processing feedback
-    Quagga.onProcessed(function (result) {
-        const drawingCtx = Quagga.canvas.ctx.overlay;
-        const drawingCanvas = Quagga.canvas.dom.overlay;
-
-        if (result) {
-            if (result.boxes) {
-                drawingCtx.clearRect(0, 0, parseInt(drawingCanvas.getAttribute("width")), parseInt(drawingCanvas.getAttribute("height")));
-                result.boxes.filter(function (box) {
-                    return box !== result.box;
-                }).forEach(function (box) {
-                    Quagga.ImageDebug.drawPath(box, {x: 0, y: 1}, drawingCtx, {color: "green", lineWidth: 2});
-                });
-            }
-
-            if (result.box) {
-                Quagga.ImageDebug.drawPath(result.box, {x: 0, y: 1}, drawingCtx, {color: "#00F", lineWidth: 2});
-            }
-
-            if (result.codeResult && result.codeResult.code) {
-                Quagga.ImageDebug.drawPath(result.line, {x: 'x', y: 'y'}, drawingCtx, {color: 'red', lineWidth: 3});
-            }
-        }
-    });
+    // Toggle between front and rear cameras
+    currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
+    
+    // Stop the scanner
+    stopScanner();
+    
+    // Restart with new camera
+    startScanner();
+    
+    // Show status message
+    const cameraName = currentFacingMode === 'environment' ? 'Rear' : 'Front';
+    showStatus(`Switched to ${cameraName} Camera`, 'success');
 }
 
 function stopScanner() {
@@ -703,6 +745,14 @@ function stopScanner() {
     if (qrStartRetryTimeout) {
         clearTimeout(qrStartRetryTimeout);
         qrStartRetryTimeout = null;
+    }
+    
+    // Stop any active video streams
+    const videoElement = document.querySelector('#video video');
+    if (videoElement && videoElement.srcObject) {
+        const tracks = videoElement.srcObject.getTracks();
+        tracks.forEach(track => track.stop());
+        videoElement.srcObject = null;
     }
 }
 
